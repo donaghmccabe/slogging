@@ -13,12 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import webob
 from urllib import quote, unquote
 from json import loads as json_loads
 import copy
 
 from slogging.compressing_file_reader import CompressingFileReader
+from swift.common import swob
+from swift.common.memcached import MemcacheRing
 from swift.proxy.server import Application
 
 
@@ -34,13 +35,16 @@ def make_request_body_file(source_file, compress=True):
 
 
 def webob_request_copy(orig_req, source_file=None, compress=True):
-    req_copy = orig_req.copy()
-    req_copy.headers = dict(orig_req.headers)
+    req_copy = swob.Request.blank(orig_req.path, environ=orig_req.environ,
+                                  headers=orig_req.headers)
+    req_copy.content_length = orig_req.content_length
+    if req_copy.content_length is None:
+        req_copy.headers['transfer-encoding'] = 'chunked'
+    req_copy.environ['swift.cache'] = MemcacheRing([])
     if source_file:
         req_copy.body_file = make_request_body_file(source_file,
                                                     compress=compress)
     return req_copy
-
 
 class InternalProxy(object):
     """
@@ -94,12 +98,13 @@ class InternalProxy(object):
         if not self.create_container(account, container):
             return False
 
-        send_headers = {'Transfer-Encoding': 'chunked'}
+        send_headers = {'Transfer-Encoding': 'chunked',
+                        'Content-Type': content_type}
         if headers:
             send_headers.update(headers)
 
         # upload the file to the account
-        req = webob.Request.blank(target_name, content_type=content_type,
+        req = swob.Request.blank(target_name,
                             environ={'REQUEST_METHOD': 'PUT'},
                             headers=send_headers)
         req.content_length = None   # to make sure we send chunked data
@@ -120,7 +125,7 @@ class InternalProxy(object):
         :param object_name: name of object to get
         :returns: iterator for object data
         """
-        req = webob.Request.blank('/v1/%s/%s/%s' %
+        req = swob.Request.blank('/v1/%s/%s/%s' %
                             (account, container, object_name),
                             environ={'REQUEST_METHOD': 'GET'})
         resp = self._handle_request(req)
@@ -134,7 +139,7 @@ class InternalProxy(object):
         :param container: container name to create
         :returns: True if successful, otherwise False
         """
-        req = webob.Request.blank('/v1/%s/%s' % (account, container),
+        req = swob.Request.blank('/v1/%s/%s' % (account, container),
                             environ={'REQUEST_METHOD': 'PUT'})
         resp = self._handle_request(req)
         return 200 <= resp.status_int < 300
@@ -185,7 +190,7 @@ class InternalProxy(object):
         if delimiter:
             qs += '&delimiter=%s' % quote(delimiter)
         path += '?%s' % qs
-        req = webob.Request.blank(path, environ={'REQUEST_METHOD': 'GET'})
+        req = swob.Request.blank(path, environ={'REQUEST_METHOD': 'GET'})
         resp = self._handle_request(req)
         if resp.status_int < 200 or resp.status_int >= 300:
             return []  # TODO: distinguish between 404 and empty container
@@ -195,7 +200,7 @@ class InternalProxy(object):
 
     def get_container_metadata(self, account, container):
         path = '/v1/%s/%s/' % (account, container)
-        req = webob.Request.blank(path, environ={'REQUEST_METHOD': 'HEAD'})
+        req = swob.Request.blank(path, environ={'REQUEST_METHOD': 'HEAD'})
         resp = self._handle_request(req)
         out = {}
         for k, v in resp.headers.iteritems():

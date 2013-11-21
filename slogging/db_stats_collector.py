@@ -23,7 +23,8 @@ import sqlite3
 
 from swift.account.server import DATADIR as account_server_data_dir
 from swift.container.server import DATADIR as container_server_data_dir
-from swift.common.db import AccountBroker, ContainerBroker
+from swift.account.backend import AccountBroker
+from swift.container.backend import ContainerBroker
 from swift.common.utils import renamer, get_logger, readconf, mkdirs, \
     TRUE_VALUES, remove_file
 from swift.common.constraints import check_mount
@@ -153,6 +154,7 @@ class ContainerStatsCollector(DatabaseStatsCollector):
         self.metadata_keys = ['X-Container-Meta-%s' % mkey.strip().title()
                 for mkey in stats_conf.get('metadata_keys', '').split(',')
                 if mkey.strip()]
+        self.metadata_keys = None  # Horrible hack...see below
 
     def get_header(self):
         header = 'Account Hash,Container Name,Object Count,Bytes Used'
@@ -174,7 +176,9 @@ class ContainerStatsCollector(DatabaseStatsCollector):
         line_data = None
         broker = ContainerBroker(db_path)
         if not broker.is_deleted():
-            info = broker.get_info(include_metadata=bool(self.metadata_keys))
+            # Hacked out metadata_keys argument because get_info() no
+            # longer supports this argument.
+            info = broker.get_info()
             encoded_container_name = urllib.quote(info['container'])
             line_data = '"%s","%s",%d,%d' % (
                 info['account'], encoded_container_name,
